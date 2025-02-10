@@ -13,7 +13,8 @@
 #define PIR_SENSOR_PIN 15      // PIR motion sensor pin (HC-SR502)
 #define SERVO_PIN 16           // Servo control pin
 #define CARGATE_SWITCH_PIN 17    // Пин концевого выключателя ворот
-
+#define LIMIT_SWITCH_PIN 21
+#define LIMIT_SWITCH_CLOSE_PIN 22
 
 // --- System Settings ---
 #define STEP_DELAY 500         // Delay between steps in microseconds
@@ -38,6 +39,10 @@ char keys[ROWS][COLS] = {
 byte rowPins[ROWS] = {9, 8, 7, 6}; // Подключение строк
 byte colPins[COLS] = {5, 4, 3, 2}; // Подключение столбцов
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+// --- Мелодия для пьезопищалки ---
+int melody[] = {262, 294, 330, 349, 392, 440, 494, 523};
+int noteDurations[] = {200, 200, 200, 200, 200, 200, 200, 400};
 
 // --- Password Configuration ---
 const String correctPassword = "1234"; // Установите правильный пароль
@@ -90,6 +95,28 @@ void setup() {
     state = PREPARATION_ST;
 }
 
+void playSuccessTone() {
+    for (int i = 0; i < 8; i++) {
+        tone(BUZZER_PIN, melody[i]);
+        delay(noteDurations[i]);
+        noTone(BUZZER_PIN);
+        delay(50);
+    }
+}
+
+void playErrorTone() {
+    for (int i = 7; i >= 0; i--) {
+        tone(BUZZER_PIN, melody[i]);
+        delay(noteDurations[i]);
+        noTone(BUZZER_PIN);
+        delay(50);
+    }
+}
+
+
+
+
+
 // --- System Check ---
 void systemCheck() {
     lcd.clear();
@@ -106,16 +133,7 @@ void systemCheck() {
     lcd.setCursor(0, 0);
 }
 
-// --- Stepper Motor Control ---
-void stepMotor(int steps, bool direction) {
-    digitalWrite(DIR_PIN, direction);
-    for (int i = 0; i < steps; i++) {
-        digitalWrite(STEP_PIN, HIGH);
-        delayMicroseconds(STEP_DELAY);
-        digitalWrite(STEP_PIN, LOW);
-        delayMicroseconds(STEP_DELAY);
-    }
-}
+
 
 // --- PIR Sensor Check ---
 bool checkPIR() {
@@ -128,7 +146,7 @@ void preparationStateHandler() {
     systemCheck();
     state = GETTING_DATA_ST;
 }
-gettingDataStateHandler
+
 
 //функция каторая отслеживает ввод пароля либо приложение rfid карты на проезд
 void gettingDataStateHandler() {
@@ -188,14 +206,13 @@ void getPasswordInput(){
     if (key) {
         if (key == '#') { // Подтверждение пароля
             if (enteredPassword == correctPassword) {
-                lcd.clear();
-                lcd.print("Access Granted");
+                playSuccessTone();
                 delay(1000);
                 state = HUMGATE_AVAILABLE_ST;
+              
             } else {
-                lcd.clear();
-                lcd.print("Access Denied");
-                tone(BUZZER_PIN, 1000, 500);
+                
+                playErrorTone();
                 delay(1000);
                 state = HUMGATE_UNAVAILABLE_ST;
             }
@@ -222,17 +239,23 @@ void getPasswordInput(){
 #define CLOSE_GATE          5
 #define CLOSE_SOLENOID      6
 
+int gateState = OPEN_SOLENOID;
 
-void cargateUnavailableHandler(){
-  lcd.print("access is denied");
+void humgateUnavailableStateHandler() {
+    delay(2000);
+    state = GETTING_DATA_ST; // Возвращаемся в режим ожидания
+}
+
+void humgateAvailableStateHandler() {
+    delay(2000);
+    state = HUMGATE_AVAILABLE_ST;
 }
 
 
-
 void openSolenoid() {
-    lcd.print("Opening solenoid...");
+    
     digitalWrite(SOLENOID_PIN, HIGH);
-    gateState = S1_OPEN_GATE;
+    gateState = OPEN_GATE;
 }
 
 
@@ -240,7 +263,7 @@ void cargateAvailableHandler() {
     lcd.print("Opening gate...");
     servo.write(90);
     delay(1000);
-    gateState = S2_WAIT_PEDESTRIAN;
+    gateState = WAIT_PEDESTRIAN;
 }
 
 
@@ -250,11 +273,11 @@ void waitForPedestrian() {
     while (millis() - startTime < PIR_TIMEOUT_MS) {
         if (digitalRead(PIR_SENSOR_PIN) == HIGH) {
             logMessage("Pedestrian detected!");
-            gateState = S3_PEDESTRIAN_PASS;
+            gateState = PEDESTRIAN_PASS;
             return;
         }
     }
-    gateState = S5_CLOSE_GATE;
+    gateState = CLOSE_GATE;
 }
 
 
@@ -262,7 +285,7 @@ void pedestrianPass() {
     lcd.print("Pedestrian passing...");
     while (digitalRead(PIR_SENSOR_PIN) == HIGH);
     delay(1000);
-    gateState = S4_WAIT_AFTER_PASS;
+    gateState = WAIT_AFTER_PASS;
 }
 
 
@@ -293,14 +316,17 @@ void closeGate() {
         if (checkPIR()) { // Если обнаружен пешеход
             lcd.print("Pedestrian detected during gate closing. Reopening gate...");
             servo.write(90); // Открываем калитку обратно
-            gateState = S5_PEDESTRIAN_PASS; // Переход в состояние прохода пешехода
+            gateState = PEDESTRIAN_PASS; // Переход в состояние прохода пешехода
             return;
         }
         delay(100); // Небольшая задержка, чтобы не перегружать процессор
     }
 
-    gateState = S6_CLOSE_SOLENOID; // Если пешеход не обнаружен, продолжаем закрытие
+    gateState = CLOSE_SOLENOID; // Если пешеход не обнаружен, продолжаем закрытие
 }
+
+
+
 
 
 void closeSolenoid() {
@@ -312,7 +338,7 @@ void closeSolenoid() {
 void handleGateLogic() {
     switch (gateState) {
         case OPEN_SOLENOID: openSolenoid(); break;
-        case OPEN_GATE: openGate(); break;
+        case OPEN_GATE: cargateAvailableHandler(); break;
         case WAIT_PEDESTRIAN: waitForPedestrian(); break;
         case PEDESTRIAN_PASS: pedestrianPass(); break;
         case WAIT_AFTER_PASS: waitAfterPass(); break;
@@ -328,14 +354,7 @@ void handleGateLogic() {
 
 //---------------------------
 
-void systemCheck() {
-    lcd.clear();
-    lcd.print("System Check...");
-    delay(1000);
-    lcd.clear();
-    lcd.print("Swipe RFID Card");
-    Serial.println("Waiting for RFID...");
-}
+bool uidReceived = false;
 
 void waitForUID() {
     if (Serial.available() > 0) {
@@ -375,7 +394,7 @@ void serverWaitStatusHandler() {
                 state = CARGATE_UNAVAILABLE_ST;
                 return;
             } else {
-                logMessage("Unexpected response from server: " + response);
+              logMessage(("Unexpected response from server: " + response).c_str());
             }
         }
     }
@@ -383,11 +402,8 @@ void serverWaitStatusHandler() {
     lcd.print("No Response");
     logMessage("Server did not respond in time.");
     memset(receivedUID, 0, sizeof(receivedUID)); // Очистка UID
-    state = PREPARATION_ST;
+    
   }
-  lcd.print("No Response");
-  state = PREPARATION_ST;
-}
 
 
 #define OPEN_CAR_GATE           0
@@ -395,6 +411,19 @@ void serverWaitStatusHandler() {
 #define WAIT_CAR_PASS           2
 #define WAIT_AFTER_CAR_PASS     3
 #define CLOSE_CAR_GATE          4
+
+
+void cargateUnavailableHandler() {
+    for (int i = 0; i < 10; i++) {
+        digitalWrite(LED_STRIP_PIN, HIGH);
+        delay(200);
+        digitalWrite(LED_STRIP_PIN, LOW);
+        delay(200);
+    }
+    lcd.println("Доступ запрещён");
+    state = GETTING_DATA_ST;
+}
+
 
 
 void stepMotor(int steps, bool direction) {
@@ -407,11 +436,6 @@ void stepMotor(int steps, bool direction) {
     }
 }
 
-
-
-bool checkPIR() {
-    return digitalRead(PIR_SENSOR_PIN) == HIGH;
-}
 
 
 void open_car_Gate() {
@@ -484,6 +508,8 @@ void handleCarGateLogic() {
         case CLOSE_CAR_GATE: closeCarGate(); break;
     }
 }
+
+
 
 
 
