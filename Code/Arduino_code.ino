@@ -12,6 +12,8 @@
 #define BUZZER_PIN 14          // Piezo buzzer control pin
 #define PIR_SENSOR_PIN 15      // PIR motion sensor pin (HC-SR502)
 #define SERVO_PIN 16           // Servo control pin
+#define CARGATE_SWITCH_PIN 17    // Пин концевого выключателя ворот
+
 
 // --- System Settings ---
 #define STEP_DELAY 500         // Delay between steps in microseconds
@@ -228,14 +230,14 @@ void cargateUnavailableHandler(){
 
 
 void openSolenoid() {
-    logMessage("Opening solenoid...");
+    lcd.print("Opening solenoid...");
     digitalWrite(SOLENOID_PIN, HIGH);
     gateState = S1_OPEN_GATE;
 }
 
 
 void cargateAvailableHandler() {
-    logMessage("Opening gate...");
+    lcd.print("Opening gate...");
     servo.write(90);
     delay(1000);
     gateState = S2_WAIT_PEDESTRIAN;
@@ -243,7 +245,7 @@ void cargateAvailableHandler() {
 
 
 void waitForPedestrian() {
-    logMessage("Waiting for pedestrian...");
+    lcd.print("Waiting for pedestrian...");
     unsigned long startTime = millis();
     while (millis() - startTime < PIR_TIMEOUT_MS) {
         if (digitalRead(PIR_SENSOR_PIN) == HIGH) {
@@ -257,7 +259,7 @@ void waitForPedestrian() {
 
 
 void pedestrianPass() {
-    logMessage("Pedestrian passing...");
+    lcd.print("Pedestrian passing...");
     while (digitalRead(PIR_SENSOR_PIN) == HIGH);
     delay(1000);
     gateState = S4_WAIT_AFTER_PASS;
@@ -265,12 +267,12 @@ void pedestrianPass() {
 
 
 void waitAfterPass() {
-    logMessage("Waiting after pass...");
+    lcd.print("Waiting after pass...");
 
     unsigned long startTime = millis();
     while (millis() - startTime < WAIT_AFTER_PASS_MS) {
         if (checkPIR()) { // Проверяем наличие пешехода
-            logMessage("Pedestrian detected during wait. Transitioning to pedestrian pass...");
+            lcd.print("Pedestrian detected during wait. Transitioning to pedestrian pass...");
             gateState = PEDESTRIAN_PASS;
             return;
         }
@@ -282,14 +284,14 @@ void waitAfterPass() {
 
 
 void closeGate() {
-    logMessage("Closing gate...");
+    lcd.print("Closing gate...");
     
     unsigned long startTime = millis();
     servo.write(0); // Начинаем закрытие калитки
 
     while (millis() - startTime < 1000) { // Проверяем пешехода в течение закрытия (1 сек)
         if (checkPIR()) { // Если обнаружен пешеход
-            logMessage("Pedestrian detected during gate closing. Reopening gate...");
+            lcd.print("Pedestrian detected during gate closing. Reopening gate...");
             servo.write(90); // Открываем калитку обратно
             gateState = S5_PEDESTRIAN_PASS; // Переход в состояние прохода пешехода
             return;
@@ -302,7 +304,7 @@ void closeGate() {
 
 
 void closeSolenoid() {
-    logMessage("Closing solenoid...");
+    lcd.print("Closing solenoid...");
     digitalWrite(SOLENOID_PIN, LOW);
 }
 
@@ -350,23 +352,38 @@ void waitForUID() {
 void serverWaitStatusHandler() {
     lcd.clear();
     lcd.print("Checking UID...");
-    Serial.println(receivedUID); // Send UID to Raspberry Pi
-    delay(100); // Wait for response
+    
+    Serial.print("Sending UID: "); Serial.println(receivedUID); // Логируем UID
+    Serial.println(receivedUID); // Отправляем UID на сервер
+    
+    delay(100); // Даем время серверу ответить
 
     unsigned long startTime = millis();
-  while (millis() - startTime < 5000) { // Ждать до 5 секунд
-      if (Serial.available() > 0) {
-        String response = Serial.readStringUntil('\n');
-          if (response == "GRANTED") {
-            lcd.print("Access Granted");
-            state = CARGATE_AVAILABLE_ST;
-            return;
-          } else if (response == "DENIED") {
-            lcd.print("Access Denied");
-            state = CARGATE_UNAVAILABLE_ST;
-            return;
+    while (millis() - startTime < 5000) { // Ждать до 5 секунд
+        if (Serial.available() > 0) {
+            String response = Serial.readStringUntil('\n');
+            response.trim(); // Удаляем пробелы и символы новой строки
+
+            if (response.equalsIgnoreCase("GRANTED")) {
+                lcd.print("Access Granted");
+                logMessage("Access granted by server.");
+                state = CARGATE_AVAILABLE_ST;
+                return;
+            } else if (response.equalsIgnoreCase("DENIED")) {
+                lcd.print("Access Denied");
+                logMessage("Access denied by server.");
+                state = CARGATE_UNAVAILABLE_ST;
+                return;
+            } else {
+                logMessage("Unexpected response from server: " + response);
+            }
         }
     }
+    
+    lcd.print("No Response");
+    logMessage("Server did not respond in time.");
+    memset(receivedUID, 0, sizeof(receivedUID)); // Очистка UID
+    state = PREPARATION_ST;
   }
   lcd.print("No Response");
   state = PREPARATION_ST;
@@ -398,14 +415,19 @@ bool checkPIR() {
 
 
 void open_car_Gate() {
-    logMessage("Opening gate...");
-    stepMotor(STEPS_PER_REV, HIGH);
-    gateState = WAIT_PEDESTRIAN;
+    lcd.print("Opening gate...");
+    pinMode(LIMIT_SWITCH_PIN, INPUT_PULLUP); // Включаем подтяжку
+
+    while (digitalRead(LIMIT_SWITCH_PIN) == HIGH) { // Пока концевик не сработает
+        stepMotor(1, HIGH); // Двигаем мотор на один шаг вперед
+        delayMicroseconds(STEP_DELAY); // Задержка между шагами
+    }
+    state = WAIT_CAR; // Переход в следующее состояние
 }
 
 
 void waitForCar() {
-    logMessage("Waiting for pedestrian...");
+    lcd.print("Waiting for car...");
     unsigned long startTime = millis();
     while (millis() - startTime < PIR_TIMEOUT_MS) {
         if (checkPIR()) {
@@ -435,18 +457,23 @@ void waitAfterCarPass() {
     gateState = CLOSE_GATE;
 }
 
-void closeCarGate() {
-    logMessage("Closing gate...");
-    unsigned long startTime = millis();
-    stepMotor(STEPS_PER_REV, LOW);
-    while (millis() - startTime < 1000) {
-        if (checkPIR()) {
-            gateState = WAIT_CAR_PASS;
-            return;
-        }
-    }
-}
 
+void closeCarGate() {
+    lcd.print("Closing gate...");
+    pinMode(CARGATE_SWITCH_PIN, INPUT_PULLUP);
+    while (digitalRead(LIMIT_SWITCH_CLOSE_PIN) == HIGH) { // Пока ворота не закроются
+      stepMotor(1, LOW); // Двигаем мотор по одному шагу назад
+      delayMicroseconds(STEP_DELAY); // Задержка между шагами
+
+      if (checkPIR()) { // Если пешеход обнаружен во время закрытия
+          logMessage("Pedestrian detected! Reopening gate...");
+          gateState = WAIT_CAR_PASS;
+          return; // Прекращаем закрытие
+      }
+  }
+  state = GETTING_DATA_ST;
+  
+}
 
 void handleCarGateLogic() {
     switch (gateState) {
